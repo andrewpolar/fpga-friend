@@ -26,6 +26,7 @@
 // Triangle vertices are generated in a square with coordinates from 100 to 2000.
 // Training set: 8192 records, Validation set: 2048 records.
 // Accuracy metric: average absolute residual error, typically ~1% of max target range after 32 epochs.
+// Feb. 8, 2026.
 
 #include <iostream>
 #include <random>
@@ -33,7 +34,7 @@
 
 using RNG = std::mt19937;
 
-//generate data
+//generate features
 std::vector<std::vector<int>> MakeRandomMatrix(RNG& rng, int rows, int cols, int min, int max) {
 	std::uniform_int_distribution<int> dist(min, max);
 	std::vector<std::vector<int>> matrix(rows);
@@ -45,11 +46,13 @@ std::vector<std::vector<int>> MakeRandomMatrix(RNG& rng, int rows, int cols, int
 	}
 	return matrix;
 }
+//area of triange
 int AreaOfTriangle(int x1, int y1, int x2, int y2, int x3, int y3) {
 	int buffer = x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2);
 	if (buffer < 0) buffer = -buffer;
 	return buffer / 2;
 }
+//generate targets
 std::vector<int> ComputeAreas(std::vector<std::vector<int>>& matrix) {
 	size_t N = (int)matrix.size();
 	std::vector<int> u(N);
@@ -58,21 +61,23 @@ std::vector<int> ComputeAreas(std::vector<std::vector<int>>& matrix) {
 	}
 	return u;
 }
-//end generate data
 
 //core functions 
 struct Function {
-	std::vector<int> f;
-	int xmin;
-	int xmax;
-	int delta_shift;
-	int i_offset;
-	int index;
+	std::vector<int> f;  //nodes
+	int xmin;            //field of definition
+	int xmax;			 //field of definition
+	int delta_shift;     //the size of single linear segment as 1 << delta_shift 
+	int offset;			 //saved distance within linear segment from the left
+	int index;           //saved left index of linear segement
 };
 
+//we start stuctures at random
 void InitializeFunction(Function& F, int nPoints,
 	int xmin, int xmax, int fmin, int fmax, int delta_shift, RNG& rng) {
 
+	//we know function range from fmin to fmax, but instantiate within narrower 
+	//limit on the purpose of further computational stability
 	int range = (fmax - fmin) >> 2;
 	F.f.resize(nPoints);
 	std::uniform_int_distribution<int> dist(fmin + range, fmax - range);
@@ -84,35 +89,40 @@ void InitializeFunction(Function& F, int nPoints,
 	F.delta_shift = delta_shift;
 }
 
+//only a linear interpolation and clipping when x out of the range
 int Compute(int x, Function& F) {
 	if (x <= F.xmin) {
 		F.index = 0;
-		F.i_offset = 512;
-		return (int)F.f[0];
+		F.offset = 512;
+		return F.f[0];
 	}
 	else if (x >= F.xmax) {
-		F.index = (int)(F.f.size()) - 2;
-		F.i_offset = (1 << F.delta_shift) - 512;
-		return (int)F.f[F.f.size() - 1];
+		F.index = (int)F.f.size() - 2;
+		F.offset = (1 << F.delta_shift) - 512;
+		return F.f[F.f.size() - 1];
 	}
 	else {
 		int D = x - F.xmin;
 		F.index = D >> F.delta_shift;
-		F.i_offset = D & ((1 << F.delta_shift) - 1);
+		F.offset = D & ((1 << F.delta_shift) - 1);
 		int64_t Q = (int64_t)(F.f[F.index + 1] - F.f[F.index]);
-		Q *= F.i_offset;
+		Q *= F.offset;
 		Q >>= F.delta_shift;
 		Q += F.f[F.index];
 		return (int)Q;
 	}
 }
 
+//compute operation saves F.index, now we can get difference without argument
+//it is numerator in partial derivative for gradient of the layer
 int GetDifference(Function& F) {
 	return F.f[F.index + 1] - F.f[F.index];
 }
 
+//update of two points of particular linear segment identified at Compute
+//residual shows a direction to more accurate model for one specific record
 void Update(int64_t residual, Function& F) {
-	int tmp = (int)((residual * F.i_offset) >> F.delta_shift);
+	int tmp = (int)((residual * F.offset) >> F.delta_shift);
 	F.f[F.index + 1] += tmp;
 	F.f[F.index] += (int)residual - tmp;
 }
@@ -144,42 +154,45 @@ int main() {
 	//configuration of network
 	//all parameters are logically related
 	//they can be changed only in coordinated way
-	const int nU0 = 53;
-	const int nU1 = 11;
-	const int nU2 = 4;
-	const int nU3 = 1;
-	const int base_shift = 13;
+	//the core element of the model is one block y = 1/n sum of functions F_i(x_i)). it maps vector to scalar
+	//layer has several blocks and maps vector to vector.
+	const int nU0 = 53;  //blocks in inner layer
+	const int nU1 = 11;  //blocks in next layer
+	const int nU2 = 4;   //blocks in next layer
+	const int nU3 = 1;   //one block in outer layer
+	const int base_shift = 13;  //we can't have division but we need compute average of nU blocks, so we 
+	//use multiplication and shift instead.  (x * 1365) >> base_shift must be approx to x / 6, because 6
+	//is number of features.  
 	//
-	const int nPoints0 = 2;
-	const int xMin0 = 0;
+	const int nPoints0 = 2;  //points functions. when changed all other parameters must be updated
+	const int xMin0 = 0;     //definition function arguments, defined only by computational statility
 	const int xMax0 = 1 << 11;
-	const int delta_shift0 = 11;
-	const int alpha0_shift = 13;
-	const int mult0 = 1365;
+	const int delta_shift0 = 11;   //1 << delta_shift0 is size of linear segment
+	const int alpha0_shift = 13;   //learning rate applied as shift to the right 
+	const int mult0 = 1365;  //for 6
 	//
 	const int nPoints1 = 14;
 	const int xMin1 = -10'000;
 	const int xMax1 = 1'693'936;
 	const int delta_shift1 = 17;
 	const int alpha1_shift = 8;
-	const int mult1 = 154;
+	const int mult1 = 154;  //for 53
 	//
 	const int nPoints2 = 14;
 	const int xMin2 = -10'000;
 	const int xMax2 = 1'693'936;
 	const int delta_shift2 = 17;
 	const int alpha2_shift = 7;
-	const int mult2 = 744;
+	const int mult2 = 744;  //for 11
 	//
 	const int nPoints3 = 14;
 	const int xMin3 = -10'000;
 	const int xMax3 = 1'693'936;
 	const int delta_shift3 = 17;
 	const int alpha3_shift = 6;
-	const int mult3 = 2048;
+	const int mult3 = 2048;  //for 4
 
 	const int nEpochs = 32;
-	const double termination = 0.99;
 
 	std::vector<std::unique_ptr<Function>> layer0;
 	for (int i = 0; i < nU0 * nFeatures; ++i) {
@@ -243,7 +256,7 @@ int main() {
 			for (int k = 0; k < nU1; ++k) {
 				int64_t m1 = 0;
 				for (int j = 0; j < nU0; ++j) {
-					m1 += Compute((int)models0[j], *layer1[k * nU0 + j]);
+					m1 += Compute(models0[j], *layer1[k * nU0 + j]);
 				}
 				m1 *= mult1;
 				m1 >>= base_shift;
@@ -253,7 +266,7 @@ int main() {
 			for (int k = 0; k < nU2; ++k) {
 				int64_t m2 = 0;
 				for (int j = 0; j < nU1; ++j) {
-					m2 += Compute((int)models1[j], *layer2[k * nU1 + j]);
+					m2 += Compute(models1[j], *layer2[k * nU1 + j]);
 				}
 				m2 *= mult2;
 				m2 >>= base_shift;
@@ -263,7 +276,7 @@ int main() {
 			for (int k = 0; k < nU3; ++k) {
 				int64_t m3 = 0;
 				for (int j = 0; j < nU2; ++j) {
-					m3 += Compute((int)models2[j], *layer3[k * nU2 + j]);
+					m3 += Compute(models2[j], *layer3[k * nU2 + j]);
 				}
 				m3 *= mult3;
 				m3 >>= base_shift;
@@ -354,7 +367,7 @@ int main() {
 			for (int k = 0; k < nU1; ++k) {
 				int64_t m1 = 0;
 				for (int j = 0; j < nU0; ++j) {
-					m1 += Compute((int)models0[j], *layer1[k * nU0 + j]);
+					m1 += Compute(models0[j], *layer1[k * nU0 + j]);
 				}
 				m1 *= mult1;
 				m1 >>= base_shift;
@@ -363,7 +376,7 @@ int main() {
 			for (int k = 0; k < nU2; ++k) {
 				int64_t m2 = 0;
 				for (int j = 0; j < nU1; ++j) {
-					m2 += Compute((int)models1[j], *layer2[k * nU1 + j]);
+					m2 += Compute(models1[j], *layer2[k * nU1 + j]);
 				}
 				m2 *= mult2;
 				m2 >>= base_shift;
@@ -372,7 +385,7 @@ int main() {
 			for (int k = 0; k < nU3; ++k) {
 				int64_t m3 = 0;
 				for (int j = 0; j < nU2; ++j) {
-					m3 += Compute((int)models2[j], *layer3[k * nU2 + j]);
+					m3 += Compute(models2[j], *layer3[k * nU2 + j]);
 				}
 				m3 *= mult3;
 				m3 >>= base_shift;
