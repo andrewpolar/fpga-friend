@@ -1,4 +1,4 @@
-﻿// Concept: Andrew Polar and Mike Poluektov
+// Concept: Andrew Polar and Mike Poluektov
 // Developer Andrew Polar
 
 // License
@@ -32,10 +32,8 @@
 #include <random>
 #include <stdint.h>
 
-using RNG = std::mt19937;
-
 //generate features
-std::vector<std::vector<int>> MakeRandomMatrix(RNG& rng, int rows, int cols, int min, int max) {
+std::vector<std::vector<int>> MakeRandomMatrix(std::mt19937& rng, int rows, int cols, int min, int max) {
 	std::uniform_int_distribution<int> dist(min, max);
 	std::vector<std::vector<int>> matrix(rows);
 	for (int i = 0; i < rows; ++i) {
@@ -70,11 +68,12 @@ struct Function {
 	int delta_shift;     //the size of single linear segment as 1 << delta_shift 
 	int offset;			 //saved distance within linear segment from the left
 	int index;           //saved left index of linear segement
+	int nPoints;         //size of f
 };
 
 //we start stuctures at random
 void InitializeFunction(Function& F, int nPoints,
-	int xmin, int xmax, int fmin, int fmax, int delta_shift, RNG& rng) {
+	int xmin, int xmax, int fmin, int fmax, int delta_shift, std::mt19937& rng) {
 
 	//we know function range from fmin to fmax, but instantiate within narrower 
 	//limit on the purpose of further computational stability
@@ -87,6 +86,7 @@ void InitializeFunction(Function& F, int nPoints,
 	F.xmin = xmin;
 	F.xmax = xmax;
 	F.delta_shift = delta_shift;
+	F.nPoints = nPoints;
 }
 
 //only a linear interpolation and clipping when x out of the range
@@ -97,7 +97,7 @@ int Compute(int x, Function& F) {
 		return F.f[0];
 	}
 	else if (x >= F.xmax) {
-		F.index = (int)F.f.size() - 2;
+		F.index = F.nPoints - 2;
 		F.offset = (1 << F.delta_shift) - 512;
 		return F.f[F.f.size() - 1];
 	}
@@ -128,8 +128,8 @@ void Update(int64_t residual, Function& F) {
 }
 //end core functions
 
-int main() {   
-	RNG rng(std::random_device{}());
+int main() {
+	std::mt19937 rng(std::random_device{}());
 	const int nFeatureMin = 100;
 	const int nFeatureMax = 2000;
 	const int nFeatures = 6;
@@ -237,46 +237,74 @@ int main() {
 	std::vector<int64_t> deltas1(nU1);
 	std::vector<int64_t> deltas0(nU0);
 
+	//max size storage for several intermediate data
+	std::vector<std::vector<int>> buffer(nU0, std::vector<int>(nU0));
+
+	printf("Training of Kolmogorov-Arnold networks. 4 layers\n");
 	printf("Targets are areas of random triangles, %d training records\n", nTrainingRecords);
 	for (int epoch = 0; epoch < nEpochs; ++epoch) {
 		//training
 		for (int record = 0; record < nTrainingRecords; ++record) {
 			//forward pass
-			//FPGA single-cycle block 
+			//FPGA single-cycle block #1
+			for (int k = 0; k < nU0; ++k) {
+				for (int j = 0; j < nFeatures; ++j) {
+					buffer[k][j] = Compute(features_training[record][j], *layer0[k * nFeatures + j]);
+				}
+			}
+			//FPGA single-cycle block #2
 			for (int k = 0; k < nU0; ++k) {
 				int64_t m0 = 0;
 				for (int j = 0; j < nFeatures; ++j) {
-					m0 += Compute(features_training[record][j], *layer0[k * nFeatures + j]);
+					m0 += buffer[k][j];
 				}
 				m0 *= mult0;
 				m0 >>= base_shift;
 				models0[k] = (int)m0;
 			}
-			//next FPGA single-cycle block
+			//FPGA single-cycle block #3
+			for (int k = 0; k < nU1; ++k) {
+				for (int j = 0; j < nU0; ++j) {
+					buffer[k][j] = Compute(models0[j], *layer1[k * nU0 + j]);
+				}
+			}
+			//FPGA single-cycle block #4
 			for (int k = 0; k < nU1; ++k) {
 				int64_t m1 = 0;
 				for (int j = 0; j < nU0; ++j) {
-					m1 += Compute(models0[j], *layer1[k * nU0 + j]);
+					m1 += buffer[k][j];
 				}
 				m1 *= mult1;
 				m1 >>= base_shift;
-				models1[k] = (int)m1; 
+				models1[k] = (int)m1;
 			}
-			//next FPGA single-cycle block
+			//FPGA single-cycle block #5
+			for (int k = 0; k < nU2; ++k) {
+				for (int j = 0; j < nU1; ++j) {
+					buffer[k][j] = Compute(models1[j], *layer2[k * nU1 + j]);
+				}
+			}
+			//FPGA single-cycle block #6
 			for (int k = 0; k < nU2; ++k) {
 				int64_t m2 = 0;
 				for (int j = 0; j < nU1; ++j) {
-					m2 += Compute(models1[j], *layer2[k * nU1 + j]);
+					m2 += buffer[k][j];
 				}
 				m2 *= mult2;
 				m2 >>= base_shift;
 				models2[k] = (int)m2;
 			}
-			//next FPGA single-cycle block
+			//FPGA single-cycle block #7
+			for (int k = 0; k < nU3; ++k) {
+				for (int j = 0; j < nU2; ++j) {
+					buffer[k][j] = Compute(models2[j], *layer3[k * nU2 + j]);
+				}
+			}
+			//FPGA single-cycle block #8
 			for (int k = 0; k < nU3; ++k) {
 				int64_t m3 = 0;
 				for (int j = 0; j < nU2; ++j) {
-					m3 += Compute(models2[j], *layer3[k * nU2 + j]);
+					m3 += buffer[k][j];
 				}
 				m3 *= mult3;
 				m3 >>= base_shift;
@@ -285,7 +313,7 @@ int main() {
 			//end of forward pass
 
 			//get all differences
-			//next FPGA single-cycle block
+			//FPGA single-cycle block #9
 			for (int k = 0; k < nU3; ++k) {
 				for (int j = 0; j < nU2; ++j) {
 					differences2[k][j] = GetDifference(*layer3[k * nU2 + j]);
@@ -303,7 +331,7 @@ int main() {
 			}
 
 			//compute all delta vectors for each layer
-			//next FPGA single-cycle block
+			//FPGA single-cycle block #10
 			deltas3[0] = targets_training[record] - models3[0];  //first one is scalar
 			for (int j = 0; j < nU2; ++j) {
 				deltas2[j] = 0;
@@ -311,14 +339,14 @@ int main() {
 					deltas2[j] += (differences2[i][j] * deltas3[i]) >> delta_shift3;
 				}
 			}
-			//next FPGA single-cycle block
+			//FPGA single-cycle block #11
 			for (int j = 0; j < nU1; ++j) {
 				deltas1[j] = 0;
 				for (int i = 0; i < nU2; ++i) {
 					deltas1[j] += differences1[i][j] * deltas2[i] >> delta_shift2;
 				}
 			}
-			//next FPGA single-cycle block
+			//FPGA single-cycle block #12
 			for (int j = 0; j < nU0; ++j) {
 				deltas0[j] = 0;
 				for (int i = 0; i < nU1; ++i) {
@@ -327,7 +355,7 @@ int main() {
 			}
 
 			//step: update all layers by deltas
-			//last FPGA single-cycle block
+			//FPGA single-cycle block #13
 			for (int k = 0; k < nU3; ++k) {
 				for (int j = 0; j < nU2; ++j) {
 					Update((deltas3[k] >> alpha3_shift), *layer3[k * nU2 + j]);
@@ -349,63 +377,71 @@ int main() {
 				}
 			}
 		}
-		//9 FPGA cycles per record
+		//end one record processing
 
-		//this validation runs every epoch, we don't need it that often
-		int error = 0;
-		for (int record = 0; record < nValidationRecords; ++record) {
+		//this is validation, it is outside of training loop
+		if (epoch >= nEpochs - 1) {
+			int error = 0;
+			for (int record = 0; record < nValidationRecords; ++record) {
 
-			for (int k = 0; k < nU0; ++k) {
-				int64_t m0 = 0;
-				for (int j = 0; j < nFeatures; ++j) {
-					m0 += Compute(features_validation[record][j], *layer0[k * nFeatures + j]);
+				for (int k = 0; k < nU0; ++k) {
+					int64_t m0 = 0;
+					for (int j = 0; j < nFeatures; ++j) {
+						m0 += Compute(features_validation[record][j], *layer0[k * nFeatures + j]);
+					}
+					m0 *= mult0;
+					m0 >>= base_shift;
+					models0[k] = (int)m0;
 				}
-				m0 *= mult0;
-				m0 >>= base_shift;
-				models0[k] = (int)m0;
-			}
-			for (int k = 0; k < nU1; ++k) {
-				int64_t m1 = 0;
-				for (int j = 0; j < nU0; ++j) {
-					m1 += Compute(models0[j], *layer1[k * nU0 + j]);
+				for (int k = 0; k < nU1; ++k) {
+					int64_t m1 = 0;
+					for (int j = 0; j < nU0; ++j) {
+						m1 += Compute(models0[j], *layer1[k * nU0 + j]);
+					}
+					m1 *= mult1;
+					m1 >>= base_shift;
+					models1[k] = (int)m1;
 				}
-				m1 *= mult1;
-				m1 >>= base_shift;
-				models1[k] = (int)m1;
-			}
-			for (int k = 0; k < nU2; ++k) {
-				int64_t m2 = 0;
-				for (int j = 0; j < nU1; ++j) {
-					m2 += Compute(models1[j], *layer2[k * nU1 + j]);
+				for (int k = 0; k < nU2; ++k) {
+					int64_t m2 = 0;
+					for (int j = 0; j < nU1; ++j) {
+						m2 += Compute(models1[j], *layer2[k * nU1 + j]);
+					}
+					m2 *= mult2;
+					m2 >>= base_shift;
+					models2[k] = (int)m2;
 				}
-				m2 *= mult2;
-				m2 >>= base_shift;
-				models2[k] = (int)m2;
-			}
-			for (int k = 0; k < nU3; ++k) {
-				int64_t m3 = 0;
-				for (int j = 0; j < nU2; ++j) {
-					m3 += Compute(models2[j], *layer3[k * nU2 + j]);
+				for (int k = 0; k < nU3; ++k) {
+					int64_t m3 = 0;
+					for (int j = 0; j < nU2; ++j) {
+						m3 += Compute(models2[j], *layer3[k * nU2 + j]);
+					}
+					m3 *= mult3;
+					m3 >>= base_shift;
+					models3[k] = (int)m3;
 				}
-				m3 *= mult3;
-				m3 >>= base_shift;
-				models3[k] = (int)m3;
-			}
 
-			int e = targets_validation[record] - models3[0];
-			if (e < 0) e = -e;
-			error += e;
+				int e = targets_validation[record] - models3[0];
+				if (e < 0) e = -e;
+				error += e;
+			}
+			current_time = clock();
+			printf("\nEpoch %d, time %2.3f, average error for unseen records %d, target limit %d\n", epoch + 1,
+				(double)(current_time - start_application) / CLOCKS_PER_SEC, error / nValidationRecords,
+				(nFeatureMax - nFeatureMin)* (nFeatureMax - nFeatureMin) / 2);
 		}
-		current_time = clock();
-		printf("Epoch %d, time %2.3f, average error %d, target limit %d\n", epoch, 
-			(double)(current_time - start_application) / CLOCKS_PER_SEC, error / nValidationRecords, 
-			(nFeatureMax - nFeatureMin)* (nFeatureMax - nFeatureMin) / 2);
+		else {
+			printf("%d ", epoch + 1);
+		}
 	}
 	printf("\n");
 
-	// Training: 8192 records, 32 epochs, 9 cycles per record = 2,359,296 cycles
-	// On a 100 MHz FPGA board, processing time ≈ 23 ms (latency)
-	// The same code runs on a PC in 1.335 s, so this elementary example
-	// is ~58× faster on the board, even though the board’s clock is 40× slower
+	// Training: 8192 records, 32 epochs, 13 cycles per record = 3,407,872 cycles
+	// On a 100 MHz FPGA board, processing time is about 34 ms (latency)
+	// The same code runs on a PC in 1.2 s, so this elementary example
+	// is 35 times faster on the board, even though the board’s clock is 40× slower
 	// Adding more functions does not increase latency; only additional layers do
+	// The latency depends only on number of layers, number of records, number of epochs,
+	// not on the size of the model
 }
+﻿
