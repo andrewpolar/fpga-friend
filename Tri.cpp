@@ -77,9 +77,10 @@ void InitializeFunction(Function& F, int nPoints,
 
 	//we know function range from fmin to fmax, but instantiate within narrower 
 	//limit on the purpose of further computational stability
+	int mean = (fmax + fmin) >> 1;
 	int range = (fmax - fmin) >> 2;
 	F.f.resize(nPoints);
-	std::uniform_int_distribution<int> dist(fmin + range, fmax - range);
+	std::uniform_int_distribution<int> dist(mean - range, mean + range);
 	for (int j = 0; j < nPoints; ++j) {
 		F.f[j] = dist(rng);
 	}
@@ -428,7 +429,7 @@ int main() {
 			current_time = clock();
 			printf("\nEpoch %d, time %2.3f, average error for unseen records %d, target limit %d\n", epoch + 1,
 				(double)(current_time - start_application) / CLOCKS_PER_SEC, error / nValidationRecords,
-				(nFeatureMax - nFeatureMin)* (nFeatureMax - nFeatureMin) / 2);
+				(nFeatureMax - nFeatureMin) * (nFeatureMax - nFeatureMin) / 2);
 		}
 		else {
 			printf("%d ", epoch + 1);
@@ -444,4 +445,3 @@ int main() {
 	// The latency depends only on number of layers, number of records, number of epochs,
 	// not on the size of the model
 }
-﻿
