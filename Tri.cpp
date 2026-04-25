@@ -243,6 +243,7 @@ int main() {
 			//FPGA single-cycle block #1
 			for (int k = 0; k < nU0; ++k) {
 				for (int j = 0; j < nFeatures; ++j) {
+					//features must be in expected range (xMin0, xMax0), clip it here if needed
 					buffer[k][j] = Compute(features_training[record][j], *layer0[k * nFeatures + j]);
 				}
 			}
@@ -257,21 +258,21 @@ int main() {
 				models0[k] = (int)m0;
 
 				//conditional block, rare range correction
-				if (models0[k] < nTargetMin) {
-					int delta = (nTargetMin - models0[k]);
+				if (models0[k] < xMin1 + 1) {
+					int delta = (xMin1 + 1 - models0[k]);
 					for (int j = 0; j < nFeatures; ++j) {
 						Update(delta, *layer0[k * nFeatures + j]);
 					}
-					models0[k] = nTargetMin;
+					models0[k] = xMin1 + 1;
 				}
 
 				//conditional block, rare range correction
-				if (models0[k] > nTargetMax) {
-					int delta = (nTargetMax - models0[k]);
+				if (models0[k] > xMax1 - 1) {
+					int delta = (xMax1 - 1 - models0[k]);
 					for (int j = 0; j < nFeatures; ++j) {
 						Update(delta, *layer0[k * nFeatures + j]);
 					}
-					models0[k] = nTargetMax;
+					models0[k] = xMax1 - 1;
 				}
 			}
 			//FPGA single-cycle block #3
@@ -291,21 +292,21 @@ int main() {
 				models1[k] = (int)m1;
 
 				//conditional block, rare range correction
-				if (models1[k] < nTargetMin) {
-					int delta = nTargetMin - models1[k];
+				if (models1[k] < xMin2 + 1) {
+					int delta = xMin2 + 1 - models1[k];
 					for (int j = 0; j < nU0; ++j) {
 						Update(delta, *layer1[k * nU0 + j]);
 					}
-					models1[k] = nTargetMin;
+					models1[k] = xMin2 + 1;
 				}
 
 				//conditional block, rare range correction
-				if (models1[k] > nTargetMax) {
-					int delta = nTargetMax - models1[k];
+				if (models1[k] > xMax2 - 1) {
+					int delta = xMax2 - 1 - models1[k];
 					for (int j = 0; j < nU0; ++j) {
 						Update(delta, *layer1[k * nU0 + j]);
 					}
-					models1[k] = nTargetMax;
+					models1[k] = xMax2 - 1;
 				}
 			}
 			//FPGA single-cycle block #5
@@ -325,21 +326,21 @@ int main() {
 				models2[k] = (int)m2;
 
 				//conditional block, rare range correction
-				if (models2[k] < nTargetMin) {
-					int delta = nTargetMin - models2[k];
+				if (models2[k] < xMin3 + 1) {
+					int delta = xMin3 + 1 - models2[k];
 					for (int j = 0; j < nU1; ++j) {
 						Update(delta, *layer2[k * nU1 + j]);
 					}
-					models2[k] = nTargetMin;
+					models2[k] = xMin3 + 1;
 				}
 
 				//conditional block, rare range correction
-				if (models2[k] > nTargetMax) {
-					int delta = nTargetMax - models2[k];
+				if (models2[k] > xMax3 - 1) {
+					int delta = xMax3 - 1 - models2[k];
 					for (int j = 0; j < nU1; ++j) {
 						Update(delta, *layer2[k * nU1 + j]);
 					}
-					models2[k] = nTargetMax;
+					models2[k] = xMax3 - 1;
 				}
 			}
 			//FPGA single-cycle block #7
@@ -435,14 +436,15 @@ int main() {
 				for (int k = 0; k < nU0; ++k) {
 					int64_t m0 = 0;
 					for (int j = 0; j < nFeatures; ++j) {
+						//features must be in expected range (xMin0, xMax0), clip it here if needed
 						m0 += Compute(features_validation[record][j], *layer0[k * nFeatures + j]);
 					}
 					m0 *= mult0;
 					m0 >>= base_shift;
 					models0[k] = (int)m0;
 
-					if (models0[k] < nTargetMin) models0[k] = nTargetMin;
-					if (models0[k] > nTargetMax) models0[k] = nTargetMax;
+					if (models0[k] < xMin1 + 1) models0[k] = xMin1 + 1;
+					if (models0[k] > xMax1 - 1) models0[k] = xMax1 - 1;
 				}
 				for (int k = 0; k < nU1; ++k) {
 					int64_t m1 = 0;
@@ -453,8 +455,8 @@ int main() {
 					m1 >>= base_shift;
 					models1[k] = (int)m1;
 
-					if (models1[k] < nTargetMin) models1[k] = nTargetMin;
-					if (models1[k] > nTargetMax) models1[k] = nTargetMax;
+					if (models1[k] < xMin2 + 1) models1[k] = xMin2 + 1;
+					if (models1[k] > xMax2 - 1) models1[k] = xMax2 - 1;
 				}
 				for (int k = 0; k < nU2; ++k) {
 					int64_t m2 = 0;
@@ -465,8 +467,8 @@ int main() {
 					m2 >>= base_shift;
 					models2[k] = (int)m2;
 
-					if (models2[k] < nTargetMin) models2[k] = nTargetMin;
-					if (models2[k] > nTargetMax) models2[k] = nTargetMax;
+					if (models2[k] < xMin3 + 1) models2[k] = xMin3 + 1;
+					if (models2[k] > xMax3 - 1) models2[k] = xMax3 - 1;
 				}
 				for (int k = 0; k < nU3; ++k) {
 					int64_t m3 = 0;
