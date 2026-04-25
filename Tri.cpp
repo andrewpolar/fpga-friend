@@ -15,6 +15,7 @@
 //https://www.sciencedirect.com/science/article/abs/pii/S0016003220301149
 //https://www.sciencedirect.com/science/article/abs/pii/S0952197620303742
 //https://link.springer.com/article/10.1007/s10994-025-06800-6
+//https://www.mdpi.com/2673-3951/6/3/88
 
 //Website:
 //http://OpenKAN.org
@@ -25,8 +26,8 @@
 // Problem: predict the area of random triangles given their vertex coordinates.
 // Triangle vertices are generated in a square with coordinates from 100 to 2000.
 // Training set: 8192 records, Validation set: 2048 records.
-// Accuracy metric: average absolute residual error, typically ~1% of max target range after 32 epochs.
-// Feb. 8, 2026.
+// Accuracy metric: average absolute residual error, typically ~1.3% of max target range after 32 epochs.
+// Apr. 25, 2026.
 
 #include <iostream>
 #include <random>
@@ -92,26 +93,18 @@ void InitializeFunction(Function& F, int nPoints,
 
 //only a linear interpolation and clipping when x out of the range
 int Compute(int x, Function& F) {
-	if (x <= F.xmin) {
-		F.index = 0;
-		F.offset = 512;
-		return F.f[0];
+	int D = x - F.xmin;
+	F.index = D >> F.delta_shift;
+	if (F.index < 0 || F.index > F.nPoints - 2) {
+		printf("Fatal: violation of array boundaries, index = %d, size = %d\n", F.index, (int)F.f.size());
+		exit(0);
 	}
-	else if (x >= F.xmax) {
-		F.index = F.nPoints - 2;
-		F.offset = (1 << F.delta_shift) - 512;
-		return F.f[F.f.size() - 1];
-	}
-	else {
-		int D = x - F.xmin;
-		F.index = D >> F.delta_shift;
-		F.offset = D & ((1 << F.delta_shift) - 1);
-		int64_t Q = (int64_t)(F.f[F.index + 1] - F.f[F.index]);
-		Q *= F.offset;
-		Q >>= F.delta_shift;
-		Q += F.f[F.index];
-		return (int)Q;
-	}
+	F.offset = D & ((1 << F.delta_shift) - 1);
+	int64_t Q = (int64_t)(F.f[F.index + 1] - F.f[F.index]);
+	Q *= F.offset;
+	Q >>= F.delta_shift;
+	Q += F.f[F.index];
+	return (int)Q;
 }
 
 //compute operation saves F.index, now we can get difference without argument
@@ -168,15 +161,15 @@ int main() {
 	const int nPoints0 = 2;  //points functions. when changed all other parameters must be updated
 	const int xMin0 = 0;     //definition function arguments, defined only by computational statility
 	const int xMax0 = 1 << 11;
-	const int delta_shift0 = 11;   //1 << delta_shift0 is size of linear segment
+	const int delta_shift0 = 11;   //1 << delta_shift0 is size of linear segment = 2048
 	const int alpha0_shift = 13;   //learning rate applied as shift to the right 
 	const int mult0 = 1365;  //for 6
 	//
 	const int nPoints1 = 14;
 	const int xMin1 = -10'000;
 	const int xMax1 = 1'693'936;
-	const int delta_shift1 = 17;
-	const int alpha1_shift = 8;
+	const int delta_shift1 = 17;  //131072
+	const int alpha1_shift = 7;
 	const int mult1 = 154;  //for 53
 	//
 	const int nPoints2 = 14;
@@ -190,7 +183,7 @@ int main() {
 	const int xMin3 = -10'000;
 	const int xMax3 = 1'693'936;
 	const int delta_shift3 = 17;
-	const int alpha3_shift = 6;
+	const int alpha3_shift = 7;
 	const int mult3 = 2048;  //for 4
 
 	const int nEpochs = 32;
@@ -262,6 +255,24 @@ int main() {
 				m0 *= mult0;
 				m0 >>= base_shift;
 				models0[k] = (int)m0;
+
+				//conditional block, rare range correction
+				if (models0[k] < nTargetMin) {
+					int delta = (nTargetMin - models0[k]);
+					for (int j = 0; j < nFeatures; ++j) {
+						Update(delta, *layer0[k * nFeatures + j]);
+					}
+					models0[k] = nTargetMin;
+				}
+
+				//conditional block, rare range correction
+				if (models0[k] > nTargetMax) {
+					int delta = (nTargetMax - models0[k]);
+					for (int j = 0; j < nFeatures; ++j) {
+						Update(delta, *layer0[k * nFeatures + j]);
+					}
+					models0[k] = nTargetMax;
+				}
 			}
 			//FPGA single-cycle block #3
 			for (int k = 0; k < nU1; ++k) {
@@ -278,6 +289,24 @@ int main() {
 				m1 *= mult1;
 				m1 >>= base_shift;
 				models1[k] = (int)m1;
+
+				//conditional block, rare range correction
+				if (models1[k] < nTargetMin) {
+					int delta = nTargetMin - models1[k];
+					for (int j = 0; j < nU0; ++j) {
+						Update(delta, *layer1[k * nU0 + j]);
+					}
+					models1[k] = nTargetMin;
+				}
+
+				//conditional block, rare range correction
+				if (models1[k] > nTargetMax) {
+					int delta = nTargetMax - models1[k];
+					for (int j = 0; j < nU0; ++j) {
+						Update(delta, *layer1[k * nU0 + j]);
+					}
+					models1[k] = nTargetMax;
+				}
 			}
 			//FPGA single-cycle block #5
 			for (int k = 0; k < nU2; ++k) {
@@ -294,6 +323,24 @@ int main() {
 				m2 *= mult2;
 				m2 >>= base_shift;
 				models2[k] = (int)m2;
+
+				//conditional block, rare range correction
+				if (models2[k] < nTargetMin) {
+					int delta = nTargetMin - models2[k];
+					for (int j = 0; j < nU1; ++j) {
+						Update(delta, *layer2[k * nU1 + j]);
+					}
+					models2[k] = nTargetMin;
+				}
+
+				//conditional block, rare range correction
+				if (models2[k] > nTargetMax) {
+					int delta = nTargetMax - models2[k];
+					for (int j = 0; j < nU1; ++j) {
+						Update(delta, *layer2[k * nU1 + j]);
+					}
+					models2[k] = nTargetMax;
+				}
 			}
 			//FPGA single-cycle block #7
 			for (int k = 0; k < nU3; ++k) {
@@ -393,6 +440,9 @@ int main() {
 					m0 *= mult0;
 					m0 >>= base_shift;
 					models0[k] = (int)m0;
+
+					if (models0[k] < nTargetMin) models0[k] = nTargetMin;
+					if (models0[k] > nTargetMax) models0[k] = nTargetMax;
 				}
 				for (int k = 0; k < nU1; ++k) {
 					int64_t m1 = 0;
@@ -402,6 +452,9 @@ int main() {
 					m1 *= mult1;
 					m1 >>= base_shift;
 					models1[k] = (int)m1;
+
+					if (models1[k] < nTargetMin) models1[k] = nTargetMin;
+					if (models1[k] > nTargetMax) models1[k] = nTargetMax;
 				}
 				for (int k = 0; k < nU2; ++k) {
 					int64_t m2 = 0;
@@ -411,6 +464,9 @@ int main() {
 					m2 *= mult2;
 					m2 >>= base_shift;
 					models2[k] = (int)m2;
+
+					if (models2[k] < nTargetMin) models2[k] = nTargetMin;
+					if (models2[k] > nTargetMax) models2[k] = nTargetMax;
 				}
 				for (int k = 0; k < nU3; ++k) {
 					int64_t m3 = 0;
@@ -429,7 +485,7 @@ int main() {
 			current_time = clock();
 			printf("\nEpoch %d, time %2.3f, average error for unseen records %d, target limit %d\n", epoch + 1,
 				(double)(current_time - start_application) / CLOCKS_PER_SEC, error / nValidationRecords,
-				(nFeatureMax - nFeatureMin) * (nFeatureMax - nFeatureMin) / 2);
+				(nTargetMax - nTargetMin));
 		}
 		else {
 			printf("%d ", epoch + 1);
