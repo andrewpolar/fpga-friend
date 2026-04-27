@@ -96,7 +96,8 @@ int Compute(int x, Function& F) {
 	int D = x - F.xmin;
 	F.index = D >> F.delta_shift;
 	if (F.index < 0 || F.index > F.nPoints - 2) {
-		printf("Fatal: violation of array boundaries, index = %d, size = %d\n", F.index, (int)F.f.size());
+		printf("Fatal: violation of array boundaries, index = %d, size = %d, x = %d, xmin = %d\n", 
+			F.index, (int)F.f.size(), x, F.xmin);
 		exit(0);
 	}
 	F.offset = D & ((1 << F.delta_shift) - 1);
@@ -165,9 +166,9 @@ int main() {
 	const int alpha0_shift = 13;   //learning rate applied as shift to the right 
 	const int mult0 = 1365;  //for 6
 	//
-	const int nPoints1 = 14;
+	const int nPoints1 = 12; 
 	const int xMin1 = -10'000;
-	const int xMax1 = 1'693'936;
+	const int xMax1 = 1'431'792; 
 	const int delta_shift1 = 17;  //131072
 	const int alpha1_shift = 7;
 	const int mult1 = 154;  //for 53
@@ -231,6 +232,10 @@ int main() {
 	std::vector<int64_t> deltas1(nU1);
 	std::vector<int64_t> deltas0(nU0);
 
+	std::vector<int> saved0(nU0);
+	std::vector<int> saved1(nU1);
+	std::vector<int> saved2(nU2);
+
 	//max size storage for several intermediate data
 	std::vector<std::vector<int>> buffer(nU0, std::vector<int>(nU0));
 
@@ -257,22 +262,16 @@ int main() {
 				m0 >>= base_shift;
 				models0[k] = (int)m0;
 
-				//conditional block, rare range correction
 				if (models0[k] < xMin1 + 1) {
-					int delta = (xMin1 + 1 - models0[k]);
-					for (int j = 0; j < nFeatures; ++j) {
-						Update(delta, *layer0[k * nFeatures + j]);
-					}
+					saved0[k] = xMin1 + 1 - models0[k];
 					models0[k] = xMin1 + 1;
 				}
-
-				//conditional block, rare range correction
-				if (models0[k] > xMax1 - 1) {
-					int delta = (xMax1 - 1 - models0[k]);
-					for (int j = 0; j < nFeatures; ++j) {
-						Update(delta, *layer0[k * nFeatures + j]);
-					}
+				else if (models0[k] > xMax1 - 1) {
+					saved0[k] = xMax1 - 1 - models0[k];
 					models0[k] = xMax1 - 1;
+				}
+				else {
+					saved0[k] = 0;
 				}
 			}
 			//FPGA single-cycle block #3
@@ -291,22 +290,16 @@ int main() {
 				m1 >>= base_shift;
 				models1[k] = (int)m1;
 
-				//conditional block, rare range correction
 				if (models1[k] < xMin2 + 1) {
-					int delta = xMin2 + 1 - models1[k];
-					for (int j = 0; j < nU0; ++j) {
-						Update(delta, *layer1[k * nU0 + j]);
-					}
+					saved1[k] = xMin2 + 1 - models1[k];
 					models1[k] = xMin2 + 1;
 				}
-
-				//conditional block, rare range correction
-				if (models1[k] > xMax2 - 1) {
-					int delta = xMax2 - 1 - models1[k];
-					for (int j = 0; j < nU0; ++j) {
-						Update(delta, *layer1[k * nU0 + j]);
-					}
+				else if (models1[k] > xMax2 - 1) {
+					saved1[k] = xMax2 - 1 - models1[k];
 					models1[k] = xMax2 - 1;
+				}
+				else {
+					saved1[k] = 0;
 				}
 			}
 			//FPGA single-cycle block #5
@@ -325,22 +318,16 @@ int main() {
 				m2 >>= base_shift;
 				models2[k] = (int)m2;
 
-				//conditional block, rare range correction
 				if (models2[k] < xMin3 + 1) {
-					int delta = xMin3 + 1 - models2[k];
-					for (int j = 0; j < nU1; ++j) {
-						Update(delta, *layer2[k * nU1 + j]);
-					}
+					saved2[k] = xMin3 + 1 - models2[k];
 					models2[k] = xMin3 + 1;
 				}
-
-				//conditional block, rare range correction
-				if (models2[k] > xMax3 - 1) {
-					int delta = xMax3 - 1 - models2[k];
-					for (int j = 0; j < nU1; ++j) {
-						Update(delta, *layer2[k * nU1 + j]);
-					}
+				else if (models2[k] > xMax3 - 1) {
+					saved2[k] = xMax3 - 1 - models2[k];
 					models2[k] = xMax3 - 1;
+				}
+				else {
+					saved2[k] = 0;
 				}
 			}
 			//FPGA single-cycle block #7
@@ -412,17 +399,17 @@ int main() {
 			}
 			for (int k = 0; k < nU2; ++k) {
 				for (int j = 0; j < nU1; ++j) {
-					Update((deltas2[k] >> alpha2_shift), *layer2[k * nU1 + j]);
+					Update((deltas2[k] >> alpha2_shift) + saved2[k], *layer2[k * nU1 + j]);
 				}
 			}
 			for (int k = 0; k < nU1; ++k) {
 				for (int j = 0; j < nU0; ++j) {
-					Update((deltas1[k] >> alpha1_shift), *layer1[k * nU0 + j]);
+					Update((deltas1[k] >> alpha1_shift) + saved1[k], *layer1[k * nU0 + j]);
 				}
 			}
 			for (int k = 0; k < nU0; ++k) {
 				for (int j = 0; j < nFeatures; ++j) {
-					Update((deltas0[k] >> alpha0_shift), *layer0[k * nFeatures + j]);
+					Update((deltas0[k] >> alpha0_shift) + saved0[k], *layer0[k * nFeatures + j]);
 				}
 			}
 		}
